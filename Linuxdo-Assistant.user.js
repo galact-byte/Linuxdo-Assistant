@@ -680,6 +680,23 @@
         static el(s, p = document) { return p.querySelector(s); }
         static els(s, p = document) { return p.querySelectorAll(s); }
 
+        // 获取 CSRF Token（从页面 meta 标签）
+        static getCsrfToken() {
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            return meta?.getAttribute('content') || '';
+        }
+
+        // 获取主站请求的标准 headers（包含 CSRF Token）
+        static getDiscourseHeaders() {
+            return {
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Discourse-Logged-In': 'true',
+                'Discourse-Present': 'true',
+                'X-CSRF-Token': Utils.getCsrfToken()
+            };
+        }
+
         // 获取当前登录用户名（保留旧逻辑，作为兜底）
         static getCurrentUsername() {
             // 方法1: 从 Discourse 全局对象获取
@@ -739,12 +756,7 @@
             try {
                 const r = await fetch('/session/current', {
                     credentials: 'include',
-                    headers: {
-                        'Accept': 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'Discourse-Logged-In': 'true',
-                        'Discourse-Present': 'true'
-                    }
+                    headers: Utils.getDiscourseHeaders()
                 });
                 // 429 处理：设置 session 分组锁
                 if (r.status === 429) {
@@ -896,7 +908,10 @@
             // 记录请求时间戳
             Utils.recordRequest('user');
             try {
-                const r = await fetch(CONFIG.API.USER_INFO(username), { credentials: 'include' });
+                const r = await fetch(CONFIG.API.USER_INFO(username), {
+                    credentials: 'include',
+                    headers: Utils.getDiscourseHeaders()
+                });
                 // 429 处理：设置 user 分组锁
                 if (r.status === 429) {
                     const retryAfter = parseInt(r.headers.get('Retry-After') || '60', 10);
@@ -926,7 +941,10 @@
             // 记录请求时间戳
             Utils.recordRequest('user');
             try {
-                const r = await fetch(CONFIG.API.USER_SUMMARY(username), { credentials: 'include' });
+                const r = await fetch(CONFIG.API.USER_SUMMARY(username), {
+                    credentials: 'include',
+                    headers: Utils.getDiscourseHeaders()
+                });
                 // 429 处理：设置 user 分组锁
                 if (r.status === 429) {
                     const retryAfter = parseInt(r.headers.get('Retry-After') || '60', 10);
@@ -990,12 +1008,8 @@
                         // 使用 Discourse 友好的请求方式，避免 429 限流
                         const r = await fetch(url, {
                             signal: controller.signal,
-                            headers: {
-                                'Accept': 'application/json',
-                                'X-Requested-With': 'XMLHttpRequest',
-                                'Discourse-Logged-In': 'true',
-                                'Discourse-Present': 'true'
-                            }
+                            credentials: 'include',
+                            headers: Utils.getDiscourseHeaders()
                         });
                         clearTimeout(timer);
                         // 4xx 熔断：客户端错误不重试
