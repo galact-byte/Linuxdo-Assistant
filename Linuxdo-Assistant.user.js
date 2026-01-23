@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      6.2.1
+// @version      6.3.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,10 +23,13 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v6.1.0
- * - 修复：float 模式下悬浮球位置超出屏幕导致不可见的问题
+ * 更新日志 v6.3.0
+ * - 新增：支持用户自定义上传图标（可分别设置默认图和悬停图）
+ * - 优化：图片自动压缩，支持PNG/JPG/GIF/WEBP格式
  *
  * 历史更新：
+ * v6.2.0 - 修复：GM_xmlhttpRequest 请求主站时添加 CSRF Token
+ * v6.1.0 - 修复：float 模式下悬浮球位置超出屏幕导致不可见的问题
  * v6.0.0 - 重大更新
  * v5.16.0 - 调整：「显示每日排名」设置默认改为开启
  * v5.15.0 - 新增 API 接口调用与频率限制分析文档，README 增加完整功能说明
@@ -183,10 +186,12 @@
             set_gain_anim: "涨分动画提示",
             set_classic_icon: "经典图标",
             set_custom_icon: "自定义图标",
-            custom_icon_upload: "上传图片",
+            custom_icon_upload: "上传默认图",
+            custom_icon_upload_hover: "上传悬停图",
             custom_icon_change: "更换",
             custom_icon_delete: "删除",
-            custom_icon_tip: "建议使用透明背景PNG，尺寸128×128",
+            custom_icon_delete_hover: "删除悬停图",
+            custom_icon_tip: "建议使用透明背景PNG，可选上传悬停时显示的图片",
             set_icon_size: "图标大小",
             icon_size_sm: "小",
             icon_size_md: "中",
@@ -337,10 +342,12 @@
             set_gain_anim: "Gain Animation",
             set_classic_icon: "Classic Icon",
             set_custom_icon: "Custom Icon",
-            custom_icon_upload: "Upload",
+            custom_icon_upload: "Upload Default",
+            custom_icon_upload_hover: "Upload Hover",
             custom_icon_change: "Change",
             custom_icon_delete: "Delete",
-            custom_icon_tip: "PNG with transparent background, 128×128 recommended",
+            custom_icon_delete_hover: "Delete Hover",
+            custom_icon_tip: "PNG with transparent background, optional hover image",
             set_icon_size: "Icon Size",
             icon_size_sm: "S",
             icon_size_md: "M",
@@ -3162,7 +3169,15 @@
                 showDailyRank: Utils.get(CONFIG.KEYS.SHOW_DAILY_RANK, true) // 显示每日排名，默认开启
             };
             this.iconCache = Utils.get(CONFIG.KEYS.ICON_CACHE, null); // 小秘书图标缓存
-            this.customIcon = Utils.get(CONFIG.KEYS.CUSTOM_ICON, null); // 用户自定义图标(base64)
+            // 用户自定义图标 {normal: base64, hover?: base64}，兼容旧版单字符串格式
+            const savedCustomIcon = Utils.get(CONFIG.KEYS.CUSTOM_ICON, null);
+            if (typeof savedCustomIcon === 'string') {
+                // 旧格式迁移：单字符串 -> {normal: string}
+                this.customIcon = { normal: savedCustomIcon };
+                Utils.set(CONFIG.KEYS.CUSTOM_ICON, this.customIcon);
+            } else {
+                this.customIcon = savedCustomIcon; // {normal, hover} 或 null
+            }
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
             this.trustData = Utils.get(CONFIG.KEYS.CACHE_TRUST_DATA, null);
             this.creditData = Utils.get(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
@@ -3376,9 +3391,11 @@
             btn.title = this.t('title');
 
             // 根据图标设置决定显示内容（优先级：自定义图标 > 小秘书图标 > 经典图标）
-            if (this.state.useCustomIcon && this.customIcon) {
-                // 用户自定义图标
-                btn.innerHTML = `<span class="lda-header-btn-img-wrap"><img class="lda-header-btn-img lda-header-btn-img-normal" src="${this.customIcon}" alt=""><img class="lda-header-btn-img lda-header-btn-img-hover" src="${this.customIcon}" alt=""></span>小秘书`;
+            if (this.state.useCustomIcon && this.customIcon?.normal) {
+                // 用户自定义图标（hover图可选，没有则用normal图）
+                const normalUrl = this.customIcon.normal;
+                const hoverUrl = this.customIcon.hover || this.customIcon.normal;
+                btn.innerHTML = `<span class="lda-header-btn-img-wrap"><img class="lda-header-btn-img lda-header-btn-img-normal" src="${normalUrl}" alt=""><img class="lda-header-btn-img lda-header-btn-img-hover" src="${hoverUrl}" alt=""></span>小秘书`;
             } else if (this.state.useClassicIcon) {
                 btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>小秘书`;
             } else {
@@ -3580,17 +3597,28 @@
                                 <span style="font-size:12px">${displayMode === 'header' ? this.t('set_show_float_icon') : this.t('set_show_header_btn')}</span>
                             </div>
                         </div>
-                        <div class="lda-opt lda-custom-icon-opt" style="flex-wrap:wrap;gap:8px;align-items:center;">
-                            <span style="font-size:12px;color:var(--lda-dim);">${this.t('set_custom_icon')}</span>
-                            <div id="lda-custom-icon-area" style="display:flex;align-items:center;gap:8px;">
-                                ${this.customIcon ? `
-                                    <img id="lda-custom-icon-preview" src="${this.customIcon}" style="width:32px;height:32px;border-radius:50%;object-fit:contain;border:1px solid var(--lda-border-color);background:var(--lda-bg);">
-                                    <button class="lda-btn-small" id="btn-change-custom-icon">${this.t('custom_icon_change')}</button>
-                                    <button class="lda-btn-small lda-btn-danger" id="btn-delete-custom-icon">${this.t('custom_icon_delete')}</button>
+                        <div class="lda-opt lda-custom-icon-opt" style="flex-wrap:wrap;gap:8px;align-items:flex-start;">
+                            <span style="font-size:12px;color:var(--lda-dim);width:100%;">${this.t('set_custom_icon')}</span>
+                            <div id="lda-custom-icon-area" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+                                ${this.customIcon?.normal ? `
+                                    <div style="display:flex;align-items:center;gap:4px;">
+                                        <img src="${this.customIcon.normal}" style="width:32px;height:32px;border-radius:50%;object-fit:contain;border:1px solid var(--lda-border-color);background:var(--lda-bg);" title="默认图">
+                                        <button class="lda-btn-small" id="btn-change-custom-icon">${this.t('custom_icon_change')}</button>
+                                        <button class="lda-btn-small lda-btn-danger" id="btn-delete-custom-icon">${this.t('custom_icon_delete')}</button>
+                                    </div>
+                                    ${this.customIcon?.hover ? `
+                                        <div style="display:flex;align-items:center;gap:4px;">
+                                            <img src="${this.customIcon.hover}" style="width:32px;height:32px;border-radius:50%;object-fit:contain;border:1px solid var(--lda-border-color);background:var(--lda-bg);" title="悬停图">
+                                            <button class="lda-btn-small" id="btn-change-custom-icon-hover">${this.t('custom_icon_change')}</button>
+                                            <button class="lda-btn-small lda-btn-danger" id="btn-delete-custom-icon-hover">${this.t('custom_icon_delete_hover')}</button>
+                                        </div>
+                                    ` : `
+                                        <button class="lda-btn-small" id="btn-upload-custom-icon-hover">${this.t('custom_icon_upload_hover')}</button>
+                                    `}
                                 ` : `
                                     <button class="lda-btn-small" id="btn-upload-custom-icon">${this.t('custom_icon_upload')}</button>
                                 `}
-                                <input type="file" id="inp-custom-icon-file" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;">
+                                <input type="file" id="inp-custom-icon-file" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none;" data-icon-type="normal">
                             </div>
                             <span style="font-size:10px;color:var(--lda-dim);width:100%;">${this.t('custom_icon_tip')}</span>
                         </div>
@@ -4022,12 +4050,23 @@
                     this.state.showDailyRank = e.target.checked;
                     Utils.set(CONFIG.KEYS.SHOW_DAILY_RANK, e.target.checked);
                 }
-                // 自定义图标：上传按钮
+                // 自定义图标：上传默认图按钮
                 if (e.target.id === 'btn-upload-custom-icon' || e.target.id === 'btn-change-custom-icon') {
                     const fileInput = Utils.el('#inp-custom-icon-file', this.dom.setting);
-                    if (fileInput) fileInput.click();
+                    if (fileInput) {
+                        fileInput.dataset.iconType = 'normal';
+                        fileInput.click();
+                    }
                 }
-                // 自定义图标：删除按钮
+                // 自定义图标：上传hover图按钮
+                if (e.target.id === 'btn-upload-custom-icon-hover' || e.target.id === 'btn-change-custom-icon-hover') {
+                    const fileInput = Utils.el('#inp-custom-icon-file', this.dom.setting);
+                    if (fileInput) {
+                        fileInput.dataset.iconType = 'hover';
+                        fileInput.click();
+                    }
+                }
+                // 自定义图标：删除默认图按钮（删除整个自定义图标）
                 if (e.target.id === 'btn-delete-custom-icon') {
                     this.customIcon = null;
                     this.state.useCustomIcon = false;
@@ -4036,6 +4075,16 @@
                     this.updateBallIcon();
                     this.updateHeaderButtonIcon();
                     this.renderSettings();
+                }
+                // 自定义图标：删除hover图按钮（只删除hover，保留normal）
+                if (e.target.id === 'btn-delete-custom-icon-hover') {
+                    if (this.customIcon) {
+                        delete this.customIcon.hover;
+                        Utils.set(CONFIG.KEYS.CUSTOM_ICON, this.customIcon);
+                        this.updateBallIcon();
+                        this.updateHeaderButtonIcon();
+                        this.renderSettings();
+                    }
                 }
                 const iconSizeNode = e.target.closest('#grp-icon-size .lda-seg-item');
                 if (iconSizeNode) {
@@ -4061,10 +4110,9 @@
                 if (wasOpen) this.togglePanel(true);
             };
 
-            // 自定义图标文件选择事件
-            const customIconFileInput = Utils.el('#inp-custom-icon-file', this.dom.setting);
-            if (customIconFileInput) {
-                customIconFileInput.onchange = (e) => {
+            // 自定义图标文件选择事件（使用事件委托，避免renderSettings后事件丢失）
+            this.dom.setting.addEventListener('change', (e) => {
+                if (e.target.id === 'inp-custom-icon-file') {
                     const file = e.target.files?.[0];
                     if (!file) return;
                     // 检查文件类型
@@ -4072,12 +4120,14 @@
                         this.showToast('仅支持 PNG/JPG/GIF/WEBP 格式', 'error');
                         return;
                     }
-                    // 读取并压缩图片（会自动压缩到128x128，无需限制原始大小）
-                    this.processCustomIcon(file);
+                    // 获取图标类型（normal 或 hover）
+                    const iconType = e.target.dataset.iconType || 'normal';
+                    // 读取并压缩图片
+                    this.processCustomIcon(file, iconType);
                     // 清空 input 以便重复选择同一文件
                     e.target.value = '';
-                };
-            }
+                }
+            });
 
             this.dom.setting.addEventListener('input', (e) => {
                 if (e.target.id === 'inp-opacity') {
@@ -4364,9 +4414,11 @@
             if (!ball) return;
 
             // 优先级：自定义图标 > 小秘书图标 > 经典图标
-            if (this.state.useCustomIcon && this.customIcon) {
-                // 用户自定义图标
-                ball.innerHTML = `<img class="lda-ball-img lda-ball-img-normal" src="${this.customIcon}" alt=""><img class="lda-ball-img lda-ball-img-hover" src="${this.customIcon}" alt="">`;
+            if (this.state.useCustomIcon && this.customIcon?.normal) {
+                // 用户自定义图标（hover图可选，没有则用normal图）
+                const normalUrl = this.customIcon.normal;
+                const hoverUrl = this.customIcon.hover || this.customIcon.normal;
+                ball.innerHTML = `<img class="lda-ball-img lda-ball-img-normal" src="${normalUrl}" alt=""><img class="lda-ball-img lda-ball-img-hover" src="${hoverUrl}" alt="">`;
                 ball.classList.remove('lda-ball-classic');
                 ball.classList.add('lda-ball-secretary');
                 // 设置尺寸
@@ -4395,7 +4447,8 @@
         }
 
         // 处理用户上传的自定义图标
-        processCustomIcon(file) {
+        // iconType: 'normal' | 'hover'
+        processCustomIcon(file, iconType = 'normal') {
             const reader = new FileReader();
             reader.onload = (e) => {
                 const img = new Image();
@@ -4419,17 +4472,22 @@
                     // 转为 base64（PNG 保持透明度）
                     const base64 = canvas.toDataURL('image/png', 0.9);
                     
-                    // 保存
-                    this.customIcon = base64;
+                    // 保存到对应字段
+                    if (!this.customIcon) {
+                        this.customIcon = {};
+                    }
+                    this.customIcon[iconType] = base64;
                     this.state.useCustomIcon = true;
-                    Utils.set(CONFIG.KEYS.CUSTOM_ICON, base64);
+                    Utils.set(CONFIG.KEYS.CUSTOM_ICON, this.customIcon);
                     Utils.set(CONFIG.KEYS.USE_CUSTOM_ICON, true);
                     
                     // 更新图标
                     this.updateBallIcon();
                     this.updateHeaderButtonIcon();
                     this.renderSettings();
-                    this.showToast(this.state.lang === 'zh' ? '图标已更新' : 'Icon updated', 'success');
+                    const msgZh = iconType === 'hover' ? '悬停图标已更新' : '图标已更新';
+                    const msgEn = iconType === 'hover' ? 'Hover icon updated' : 'Icon updated';
+                    this.showToast(this.state.lang === 'zh' ? msgZh : msgEn, 'success');
                 };
                 img.onerror = () => {
                     this.showToast(this.state.lang === 'zh' ? '图片加载失败' : 'Failed to load image', 'error');
@@ -4448,9 +4506,11 @@
             if (!headerBtn) return;
 
             // 根据图标设置决定显示内容（优先级：自定义图标 > 小秘书图标 > 经典图标）
-            if (this.state.useCustomIcon && this.customIcon) {
-                // 用户自定义图标
-                headerBtn.innerHTML = `<span class="lda-header-btn-img-wrap"><img class="lda-header-btn-img lda-header-btn-img-normal" src="${this.customIcon}" alt=""><img class="lda-header-btn-img lda-header-btn-img-hover" src="${this.customIcon}" alt=""></span>小秘书`;
+            if (this.state.useCustomIcon && this.customIcon?.normal) {
+                // 用户自定义图标（hover图可选，没有则用normal图）
+                const normalUrl = this.customIcon.normal;
+                const hoverUrl = this.customIcon.hover || this.customIcon.normal;
+                headerBtn.innerHTML = `<span class="lda-header-btn-img-wrap"><img class="lda-header-btn-img lda-header-btn-img-normal" src="${normalUrl}" alt=""><img class="lda-header-btn-img lda-header-btn-img-hover" src="${hoverUrl}" alt=""></span>小秘书`;
             } else if (this.state.useClassicIcon) {
                 headerBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>小秘书`;
             } else {
