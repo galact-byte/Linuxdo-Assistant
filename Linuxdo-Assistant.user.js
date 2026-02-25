@@ -27,6 +27,8 @@
  * - 信任级别：适配 connect.linux.do 改版后的新排版（div.card + .tl3-ring/.tl3-bar-item/.tl3-quota-card/.tl3-veto-item）
  * - 信任级别：与「linux.do 小助手（增强版）」一致的获取方式，仅用 GM_xmlhttpRequest 直连 connect，不请求 session，避免 429
  * - 信任级别：直连未返回数据时仅提示打开 Connect 后重试，不再走 session/summary 降级路径
+ * - 文案：未达标改为「未达升级标准」，避免误解为当前等级未达标
+ * - 请求频率限制恢复为每分钟 3 次/组（429 实为误用 session 导致，非限频放宽可解决）
  *
  * 历史更新：
  * v6.4.0 - 优化：自定义图标分辨率提升至512x512，与小秘书图标一致，高DPI屏幕更清晰
@@ -135,9 +137,9 @@
         }
     };
 
-    // 请求频率限制配置（放宽至每分钟 8 次/组，与增强版体验一致，信任页主路径已改为直连 connect 不占限频）
+    // 请求频率限制配置（每分钟最多 3 次/组；信任页已改为直连 connect 不占限频，429 主要因当时误用 session 导致）
     const REQUEST_LIMIT = {
-        MAX_REQUESTS_PER_MINUTE: 8,
+        MAX_REQUESTS_PER_MINUTE: 3,
         WINDOW_MS: 60 * 1000  // 1 分钟窗口
     };
 
@@ -171,7 +173,7 @@
             trust_go_login: "前往登录",
             level: "当前级别",
             status_ok: "已达标",
-            status_fail: "未达标",
+            status_fail: "未达升级标准",
             status_fallback: "降级显示",
             celebrate_title: "🎊 全部达标！",
             celebrate_subtitle: "所有要求均已满足",

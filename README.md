@@ -408,6 +408,8 @@
 ### v6.5.0
 - 🔄 **信任级别适配 Connect 改版** - 支持 connect.linux.do 新排版（环形图/条形图/配额卡片/否决项），与 [linux.do 小助手（增强版）](https://greasyfork.org/zh-CN/scripts/552210-linux-do-%E5%B0%8F%E5%8A%A9%E6%89%8B-%E5%A2%9E%E5%BC%BA%E7%89%88) 一致的获取方式
 - 🚫 **信任页不再请求 session** - 仅用 GM_xmlhttpRequest 直连 connect.linux.do，避免 429 限流，直连失败时仅提示打开 Connect 后重试
+- 📝 **文案优化** - 未达标改为「未达升级标准」，避免误解为当前等级未达标
+- 🔧 **频率限制** - 恢复为每分钟 3 次/组（429 实为误用 session 导致）
 
 ### v5.16.0
 - 🔧 **默认值调整** - 「显示每日排名」设置默认改为开启
