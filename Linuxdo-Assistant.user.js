@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      6.4.0
+// @version      6.5.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,10 +23,13 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v6.4.0
- * - 优化：自定义图标分辨率提升至512x512，与小秘书图标一致，高DPI屏幕更清晰
+ * 更新日志 v6.5.0
+ * - 信任级别：适配 connect.linux.do 改版后的新排版（div.card + .tl3-ring/.tl3-bar-item/.tl3-quota-card/.tl3-veto-item）
+ * - 信任级别：与「linux.do 小助手（增强版）」一致的获取方式，仅用 GM_xmlhttpRequest 直连 connect，不请求 session，避免 429
+ * - 信任级别：直连未返回数据时仅提示打开 Connect 后重试，不再走 session/summary 降级路径
  *
  * 历史更新：
+ * v6.4.0 - 优化：自定义图标分辨率提升至512x512，与小秘书图标一致，高DPI屏幕更清晰
  * v6.3.0 - 新增：支持用户自定义上传图标（可分别设置默认图和悬停图）
  * v6.2.0 - 修复：GM_xmlhttpRequest 请求主站时添加 CSRF Token
  * v6.1.0 - 修复：float 模式下悬浮球位置超出屏幕导致不可见的问题
@@ -132,9 +135,9 @@
         }
     };
 
-    // 请求频率限制配置（每分钟最多 3 次请求）
+    // 请求频率限制配置（放宽至每分钟 8 次/组，与增强版体验一致，信任页主路径已改为直连 connect 不占限频）
     const REQUEST_LIMIT = {
-        MAX_REQUESTS_PER_MINUTE: 3,
+        MAX_REQUESTS_PER_MINUTE: 8,
         WINDOW_MS: 60 * 1000  // 1 分钟窗口
     };
 
@@ -884,7 +887,7 @@
             }
         }
 
-        // 从 connect.linux.do 的欢迎语中解析"用户名 + 当前等级"（参考 v4 逻辑）
+        // 从 connect.linux.do 的欢迎语中解析"用户名 + 当前等级"（支持改版前后两种排版）
         static async fetchConnectWelcome() {
             // Firefox 需要 Referer 头才能正确发送跨域 cookie
             const html = await Utils.request(CONFIG.API.TRUST, { timeout: 15000, retries: 2, withCredentials: true, headers: { 'Referer': 'https://connect.linux.do/' } });
@@ -897,23 +900,48 @@
                 throw err;
             }
 
-            const h1 = doc.querySelector('h1');
-            const h1Text = (h1?.textContent || '').trim();
-
             let username = null;
             let level = null;
 
-            // 例如: "你好，一剑万生 (YY_WD) 2级用户"
-            let m = h1Text.match(/你好，\s*([^\(\s]*)\s*\(?([^)]*)\)?\s*(\d+)\s*级用户/i);
-            if (m) {
-                username = (m[2] || m[1] || '').trim();
-                level = (m[3] || '').trim();
+            // 改版后：div.card 内 p.card-subtitle 为 "@username · 过去 100 天内的数据"，h2.card-title 为 "信任级别 X 的要求"，badge 已达到/未达到
+            const card = Array.from(doc.querySelectorAll('div.card')).find(div => {
+                const h2 = div.querySelector('h2.card-title');
+                return h2 && /信任级别/.test(h2.textContent) && /的要求/.test(h2.textContent);
+            });
+            if (card) {
+                const sub = card.querySelector('p.card-subtitle');
+                if (sub) {
+                    const subText = sub.textContent.trim();
+                    const atMatch = subText.match(/@([^\s·]+)/);
+                    if (atMatch) username = atMatch[1].trim();
+                }
+                const h2 = card.querySelector('h2.card-title');
+                const titleMatch = h2 && h2.textContent.match(/信任级别\s*(\d+)\s*的要求/);
+                const targetLevel = titleMatch ? parseInt(titleMatch[1], 10) : null;
+                const badge = card.querySelector('.card-header .badge');
+                const isAchieved = badge && badge.classList.contains('badge-success');
+                if (targetLevel != null) level = String(isAchieved ? targetLevel : targetLevel - 1);
             }
 
-            // 英文兜底（不严格）
-            if (!level) {
-                const m2 = h1Text.match(/trust\s*level\s*(\d+)/i) || h1Text.match(/(\d+)\s*(?:level|lvl)/i);
-                if (m2) level = (m2[1] || '').trim();
+            // 改版后兜底：用户菜单 "信任级别 X"
+            if ((!username || level === null) && bodyText) {
+                const menuLevel = bodyText.match(/信任级别\s*(\d+)/);
+                if (menuLevel) level = menuLevel[1].trim();
+            }
+
+            // 旧版：h1 例如 "你好，一剑万生 (YY_WD) 2级用户"
+            if (!username || level === null) {
+                const h1 = doc.querySelector('h1');
+                const h1Text = (h1?.textContent || '').trim();
+                const m = h1Text.match(/你好，\s*([^\(\s]*)\s*\(?([^)]*)\)?\s*(\d+)\s*级用户/i);
+                if (m) {
+                    if (!username) username = (m[2] || m[1] || '').trim();
+                    if (level === null) level = (m[3] || '').trim();
+                }
+                if (level === null && h1Text) {
+                    const m2 = h1Text.match(/trust\s*level\s*(\d+)/i) || h1Text.match(/(\d+)\s*(?:level|lvl)/i);
+                    if (m2) level = (m2[1] || '').trim();
+                }
             }
 
             if (username) username = username.replace(/^@/, '');
@@ -4176,6 +4204,7 @@
 
         beginWait(page, onlyWhenActive = true) {
             const ps = this.pendingStatus[page];
+            if (!ps) return () => {};
             ps.count += 1;
             if (!ps.since) ps.since = Date.now();
             const shouldTimer = !onlyWhenActive || this.isPageActive(page);
@@ -4188,6 +4217,7 @@
 
         finishWait(page, onlyWhenActive = true) {
             const ps = this.pendingStatus[page];
+            if (!ps) return;
             ps.count = Math.max(0, ps.count - 1);
             if (ps.count === 0) {
                 this.clearSlowTip(page);
@@ -4227,6 +4257,7 @@
 
         refreshSlowTipForPage(page) {
             const ps = this.pendingStatus[page];
+            if (!ps) return; // 如 activePage 为 'setting' 时无对应 pendingStatus
             if (ps.count > 0) {
                 const wait = Math.max(0, 5000 - (Date.now() - (ps.since || Date.now())));
                 if (ps.timer) clearTimeout(ps.timer);
@@ -4934,24 +4965,130 @@
             };
         }
 
+        // ===== 与增强版完全一致：仅用 GM_xmlhttpRequest 请求 connect.linux.do（不传 withCredentials/headers），不请求 session
+        // 增强版：method GET, url, timeout 15000，无其它参数；先找 card 再解析，等级从页面文案「信任级别 X 的要求 已达到/未达到」解析
+        fetchTrustFromConnectOnly() {
+            return new Promise((resolve) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: 'https://connect.linux.do/',
+                    timeout: 15000,
+                    onload: (response) => {
+                        if (response.status !== 200) {
+                            resolve(null);
+                            return;
+                        }
+                        try {
+                            const responseText = response.responseText;
+                            const tempDiv = document.createElement('div');
+                            tempDiv.innerHTML = responseText;
+                            const pageText = tempDiv.textContent || '';
+
+                            // 1) 先找新版 card（与增强版 processHighLevelUserData 一致）
+                            const card = Array.from(tempDiv.querySelectorAll('div.card')).find(div => {
+                                const h2 = div.querySelector('h2.card-title');
+                                return h2 && /信任级别/.test(h2.textContent) && /的要求/.test(h2.textContent);
+                            });
+
+                            if (!card) {
+                                // 无 card 再判断是否未登录（避免页面上有「登录」链接但实际已登录有数据时误判）
+                                const loginHint = tempDiv.querySelector('form[action*="/login"], form[action*="/session"]');
+                                if (loginHint || (/登录|sign\s*in/i.test(pageText) && !/信任级别\s*\d+\s*的要求/.test(pageText))) {
+                                    resolve(null);
+                                    return;
+                                }
+                                resolve(null);
+                                return;
+                            }
+
+                            // 2) 等级从页面文案解析（与增强版一致）
+                            let level = '';
+                            const levelRequirementMatch = pageText.match(/信任级别\s*(\d+)\s*的要求\s*(已达到|未达到)/);
+                            if (levelRequirementMatch) {
+                                const targetLevel = parseInt(levelRequirementMatch[1], 10);
+                                const status = levelRequirementMatch[2];
+                                level = status === '已达到' ? String(targetLevel) : String(targetLevel - 1);
+                            }
+                            if (!level) {
+                                const statusMatch = pageText.match(/(已达到|不符合)信任级别\s*(\d+)\s*要求/);
+                                if (statusMatch) {
+                                    const targetLevel = parseInt(statusMatch[2], 10);
+                                    level = statusMatch[1] === '已达到' ? String(targetLevel) : String(targetLevel - 1);
+                                }
+                            }
+
+                            // 3) 解析指标（新排版）
+                            const parsed = this._parseConnectNewLayout(card, level || null);
+                            if (!parsed || parsed.items.length === 0) {
+                                resolve(null);
+                                return;
+                            }
+                            if (level) parsed.level = level;
+
+                            // 4) 用户名：改版后从 card-subtitle，旧版从 h1
+                            let username = null;
+                            const sub = card.querySelector('p.card-subtitle');
+                            if (sub) {
+                                const atMatch = sub.textContent.trim().match(/@([^\s·]+)/);
+                                if (atMatch) username = atMatch[1].trim();
+                            }
+                            if (!username) {
+                                const h1 = tempDiv.querySelector('h1');
+                                const h1Text = (h1 && h1.textContent) ? h1.textContent.trim() : '';
+                                const m = h1Text.match(/你好，\s*[^(\s]*\s*\(?([^)]*)\)?\s*(\d+)级用户/i);
+                                if (m) username = (m[1] || '').trim().replace(/^@/, '');
+                            }
+
+                            this.state.trustCache = parsed.newCache;
+                            Utils.set(CONFIG.KEYS.CACHE_TRUST, parsed.newCache);
+                            resolve({
+                                username,
+                                basic: { level: parsed.level, isPass: parsed.isPass, items: parsed.items, source: 'connect' },
+                                newCache: parsed.newCache
+                            });
+                        } catch (_) {
+                            resolve(null);
+                        }
+                    },
+                    onerror: () => resolve(null),
+                    ontimeout: () => resolve(null)
+                });
+            });
+        }
+
         // ===== 2级及以上用户数据获取（使用 connect.linux.do）=====
+        // 支持改版后的新排版：div.card + .tl3-ring / .tl3-bar-item / .tl3-quota-card / .tl3-veto-item，无数据时回退到旧版 table
         async fetchHighLevelTrustData(knownLevel = null) {
             // Firefox 需要 Referer 头才能正确发送跨域 cookie
             const html = await Utils.request(CONFIG.API.TRUST, { withCredentials: true, headers: { 'Referer': 'https://connect.linux.do/' } });
             const doc = new DOMParser().parseFromString(html, 'text/html');
             const bodyText = doc.body?.textContent || '';
             const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
-            const levelNode = Array.from(doc.querySelectorAll('h1, h2, h3')).find(x => /信任|trust/i.test(x.textContent));
+            if (loginHint || /登录|login|sign\s*in/i.test(bodyText)) throw new Error("NeedLogin");
 
+            const card = Array.from(doc.querySelectorAll('div.card')).find(div => {
+                const h2 = div.querySelector('h2.card-title');
+                return h2 && /信任级别/.test(h2.textContent) && /的要求/.test(h2.textContent);
+            });
+
+            if (card) {
+                const parsed = this._parseConnectNewLayout(card, knownLevel);
+                if (parsed && parsed.items.length > 0) {
+                    this.state.trustCache = parsed.newCache;
+                    Utils.set(CONFIG.KEYS.CACHE_TRUST, parsed.newCache);
+                    return { level: parsed.level, isPass: parsed.isPass, items: parsed.items, source: 'connect' };
+                }
+            }
+
+            // 回退：旧版页面结构（h2/h3 + table tr）
+            const levelNode = Array.from(doc.querySelectorAll('h1, h2, h3')).find(x => /信任|trust/i.test(x.textContent));
             if (!levelNode) {
                 const possibleTable = doc.querySelector('table');
-                if (loginHint || /登录|login|sign\s*in/i.test(bodyText)) throw new Error("NeedLogin");
                 if (!possibleTable) throw new Error("ParseError");
             }
 
             const level = knownLevel !== null ? String(knownLevel) : levelNode.textContent.replace(/\D/g, '');
             const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
-            // 注意：即使 rows.length === 0 也不设置 focusFlags，避免循环刷新
 
             const items = [];
             const newCache = {};
@@ -4992,10 +5129,94 @@
             this.state.trustCache = newCache;
             Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
 
-            // 只有当存在数据行且所有项目都达标时，isPass 才为 true
             const isPass = items.length > 0 && allPassed;
-
             return { level, isPass, items, source: 'connect' };
+        }
+
+        // 解析 connect 改版后的新排版：.tl3-ring / .tl3-bar-item / .tl3-quota-card / .tl3-veto-item
+        _parseConnectNewLayout(card, knownLevel) {
+            const h2 = card.querySelector('h2.card-title');
+            const titleMatch = (h2 && h2.textContent) ? h2.textContent.match(/信任级别\s*(\d+)\s*的要求/) : null;
+            const targetLevel = titleMatch ? parseInt(titleMatch[1], 10) : null;
+            const badge = card.querySelector('.card-header .badge');
+            const isAchieved = badge && badge.classList.contains('badge-success');
+            const level = knownLevel !== null ? String(knownLevel) : (targetLevel != null ? (isAchieved ? String(targetLevel) : String(targetLevel - 1)) : '');
+
+            const items = [];
+            const newCache = {};
+            const seenNames = {};
+            let allPassed = true;
+
+            const pushItem = (name, currentNum, targetNum, isGood, currentStr) => {
+                if (seenNames[name]) name = name + ' (All)';
+                seenNames[name] = true;
+                const oldVal = this.state.trustCache[name];
+                let diff = (typeof oldVal === 'number' && oldVal !== currentNum) ? currentNum - oldVal : 0;
+                newCache[name] = currentNum;
+                let pct = 0;
+                if (targetNum > 0) pct = Math.min((currentNum / targetNum) * 100, 100);
+                else if (isGood) pct = 100;
+                items.push({ name, current: currentStr, target: targetNum, isGood, pct, diff });
+                if (!isGood) allPassed = false;
+            };
+
+            card.querySelectorAll('.tl3-ring').forEach(ring => {
+                const label = ring.querySelector('.tl3-ring-label');
+                const circle = ring.querySelector('.tl3-ring-circle');
+                const currentEl = ring.querySelector('.tl3-ring-current');
+                const targetEl = ring.querySelector('.tl3-ring-target');
+                if (!label || !currentEl) return;
+                const name = label.textContent.trim();
+                const currentStr = currentEl.textContent.trim();
+                const currentNum = parseFloat(currentStr.replace(/,/g, '')) || 0;
+                const targetStr = targetEl ? targetEl.textContent.replace(/^[\s/]+/, '').trim() : '';
+                const targetNum = parseFloat(targetStr.replace(/,/g, '')) || 0;
+                const isGood = circle ? circle.classList.contains('met') : false;
+                pushItem(name, currentNum, targetNum, isGood, currentStr);
+            });
+
+            card.querySelectorAll('.tl3-bar-item').forEach(bar => {
+                const labelEl = bar.querySelector('.tl3-bar-label');
+                const numsEl = bar.querySelector('.tl3-bar-nums');
+                if (!labelEl || !numsEl) return;
+                const name = labelEl.textContent.trim();
+                const numsText = numsEl.textContent.trim();
+                const parts = numsText.split('/');
+                const currentStr = (parts[0] || '').trim();
+                const targetNum = parseFloat((parts[1] || '').replace(/,/g, '')) || 0;
+                const currentNum = parseFloat(currentStr.replace(/,/g, '')) || 0;
+                const isGood = numsEl.classList.contains('met');
+                pushItem(name, currentNum, targetNum, isGood, currentStr);
+            });
+
+            card.querySelectorAll('.tl3-quota-card').forEach(quota => {
+                const labelEl = quota.querySelector('.tl3-quota-label');
+                const numsEl = quota.querySelector('.tl3-quota-nums');
+                if (!labelEl || !numsEl) return;
+                const name = labelEl.textContent.trim();
+                const numsText = numsEl.textContent.trim();
+                const parts = numsText.split('/');
+                const currentStr = (parts[0] || '').trim();
+                const targetNum = parseFloat((parts[1] || '').replace(/,/g, '')) || 0;
+                const currentNum = parseFloat(currentStr.replace(/,/g, '')) || 0;
+                const isGood = quota.classList.contains('met');
+                pushItem(name, currentNum, targetNum, isGood, currentStr);
+            });
+
+            card.querySelectorAll('.tl3-veto-item').forEach(veto => {
+                const labelEl = veto.querySelector('.tl3-veto-label');
+                const valueEl = veto.querySelector('.tl3-veto-value');
+                if (!labelEl || !valueEl) return;
+                const name = labelEl.textContent.trim();
+                const currentStr = valueEl.textContent.trim();
+                const currentNum = parseFloat(currentStr.replace(/,/g, '')) || 0;
+                const targetNum = 0;
+                const isGood = veto.classList.contains('met');
+                pushItem(name, currentNum, targetNum, isGood, currentStr);
+            });
+
+            const isPass = items.length > 0 && allPassed;
+            return { level, isPass, items, newCache };
         }
 
         // 生成降级提示横幅HTML
@@ -5039,17 +5260,6 @@
             const wrap = this.dom.trust;
             const endWait = this.beginWait('trust');
 
-            // 【频率限制预检查】如果核心分组超限且有缓存，直接使用缓存
-            // 注：leaderboard 不参与预检查，因为它有独立的 60 秒冷却且不影响核心数据显示
-            const rateCheck = Utils.checkMultiGroupRateLimit(['session', 'user', 'connect']);
-            if (rateCheck.limited && this.trustData) {
-                this.renderTrust(this.trustData);
-                this.showToast(`${this.t('rate_limit_exceeded')}（${rateCheck.waitTime}s）`, 'warning', 3000);
-                endWait();
-                return;
-            }
-
-            // 旋转
             this.refreshingPages.trust = true;
             this.refreshStartTime.trust = Date.now();
             this.setRefreshBtnLoading('trust', true);
@@ -5067,225 +5277,54 @@
                 }
                 if (this.trustData) this.renderTrust(this.trustData);
 
-                // ✅ 1) 登录态 / 用户名 / 当前等级 获取（多策略兜底：session → connect → DOM）
-                const sessionUser = await Utils.fetchSessionUser();
-
-                let username = sessionUser?.username
-                    || Utils.getCurrentUsername()
-                    || Utils.getCurrentUsernameFromDOM();
-
-                let userTrustLevel = Number.isFinite(sessionUser?.trust_level) ? sessionUser.trust_level : null;
-
-                // 兜底：从 connect.linux.do 欢迎语解析（参考 v4）
-                if (!username || userTrustLevel === null) {
-                    try {
-                        const cw = await Utils.fetchConnectWelcome();
-                        if (!username && cw?.username) username = cw.username;
-                        if (userTrustLevel === null && cw?.trustLevel !== null && cw?.trustLevel !== undefined) userTrustLevel = cw.trustLevel;
-                    } catch (_) {
-                        // ignore（NeedLogin / parse error 将在下面处理）
+                // 【增强版逻辑】先直连 connect.linux.do（GM 直连不占限频），成功则直接完成，不请求 session
+                const connectOnly = await this.fetchTrustFromConnectOnly();
+                if (connectOnly && connectOnly.basic && connectOnly.basic.items.length > 0) {
+                    const username = connectOnly.username || Utils.getCurrentUsernameFromDOM() || Utils.getCurrentUsername();
+                    if (username) this.ensureUserSig(this.makeUserSig({ username }));
+                    const basic = { ...connectOnly.basic, ui: 'normal' };
+                    const statsPromise = this.state.showDailyRank ? Utils.fetchForumStats().catch(() => null) : Promise.resolve(null);
+                    const userInfoPromise = username ? Utils.fetchUserInfo(username).catch(() => null) : Promise.resolve(null);
+                    const [forumStats, userInfo] = await Promise.all([statsPromise, userInfoPromise]);
+                    let memberDays = null;
+                    if (userInfo?.created_at) {
+                        const createdDate = new Date(userInfo.created_at);
+                        memberDays = Math.floor((Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24));
                     }
-                }
-
-                // ✅ 未能拿到用户名：更谨慎的登录判断（session 不可用时，使用 DOM 是否存在“登录/注册”入口作为辅助）
-                if (!username) {
-                    const domState = Utils.getLoginStateByDOM();
-                    if (domState === false) {
-                        // 不自动设置 focusFlags，避免循环刷新
-                        wrap.innerHTML = `
-          <div class="lda-card lda-auth-card">
-            <div class="lda-auth-top">
-              <div class="lda-auth-icon">
-                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4Z" fill="currentColor" opacity=".15"/>
-                  <path d="M12 2.2 20 5.8v5.2c0 4.95-3.33 9.58-8 10.86C7.33 20.58 4 15.95 4 11V5.8l8-3.6Z" stroke="currentColor" stroke-width="1.2"/>
-                  <path d="M9.4 12.4 11 14l3.6-3.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-              </div>
-              <div>
-                <div style="font-weight:800">${this.t('trust_not_login')}</div>
-                <div style="font-size:12px;color:var(--lda-dim);margin-top:2px;line-height:1.5">${this.t('trust_login_tip')}</div>
-              </div>
-            </div>
-            <div class="lda-auth-actions">
-              <button class="lda-auth-btn primary" id="btn-go-login"><span>${this.t('trust_go_login')}</span></button>
-              <button class="lda-auth-btn secondary" id="btn-retry-trust"><span>${this.t('credit_refresh')}</span></button>
-            </div>
-          </div>`;
-                        const btn = Utils.el('#btn-go-login', wrap);
-                        if (btn) btn.onclick = () => { this.focusFlags.trust = true; location.href = '/login'; };
-                        const retry = Utils.el('#btn-retry-trust', wrap);
-                        if (retry) retry.onclick = (e) => {
-                            e.stopPropagation();
-                            retry.classList.add('loading');
-                            this.refreshTrust(true);
-                        };
-                        this.stopRefreshWithMinDuration('trust');
-                        if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
-                        endWait();
-                        return;
-                    }
-
-                    // DOM 无法确认：仍给出"刷新/前往登录"的入口
-                    // 不自动设置 focusFlags，避免循环刷新
-                    wrap.innerHTML = `
-          <div class="lda-card lda-auth-card">
-            <div class="lda-auth-top">
-              <div class="lda-auth-icon">
-                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4Z" fill="currentColor" opacity=".15"/>
-                  <path d="M12 2.2 20 5.8v5.2c0 4.95-3.33 9.58-8 10.86C7.33 20.58 4 15.95 4 11V5.8l8-3.6Z" stroke="currentColor" stroke-width="1.2"/>
-                  <path d="M9.4 12.4 11 14l3.6-3.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-              </div>
-              <div>
-                <div style="font-weight:800">${this.t('trust_not_login')}</div>
-                <div style="font-size:12px;color:var(--lda-dim);margin-top:2px;line-height:1.5">
-                  ${this.t('trust_login_tip')}
-                </div>
-              </div>
-            </div>
-            <div class="lda-auth-actions">
-              <button class="lda-auth-btn primary" id="btn-go-login"><span>${this.t('trust_go_login')}</span></button>
-              <button class="lda-auth-btn secondary" id="btn-retry-trust"><span>${this.t('credit_refresh')}</span></button>
-            </div>
-          </div>`;
-                    const btn = Utils.el('#btn-go-login', wrap);
-                    if (btn) btn.onclick = () => location.href = '/login';
-                    const retry = Utils.el('#btn-retry-trust', wrap);
-                    if (retry) retry.onclick = (e) => {
-                        e.stopPropagation();
-                        retry.classList.add('loading');
-                        this.refreshTrust(true);
+                    const oldStats = this.trustData?.stats;
+                    const statsData = {
+                        dailyRank: this.state.showDailyRank ? (forumStats?.dailyRank ?? oldStats?.dailyRank ?? null) : null,
+                        score: this.state.showDailyRank ? (forumStats?.score ?? oldStats?.score ?? null) : null,
+                        memberDays
                     };
+                    this.trustData = { basic, stats: statsData };
+                    this.renderTrust(this.trustData);
+                    Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, this.trustData);
+                    this.markFetch('trust');
+                    if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                     this.stopRefreshWithMinDuration('trust');
-                    if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                     endWait();
                     return;
                 }
 
-                // ✅ 2) 已登录：拿 username + trust_level
-                let userInfoData = null;
-                if (userTrustLevel === null && username) {
-                    userInfoData = await Utils.fetchUserInfo(username);
-                    userTrustLevel = userInfoData?.trust_level ?? null;
-                }
-                const levelText = userTrustLevel ?? '?';
-                if (username) this.ensureUserSig(this.makeUserSig({ username }));
-
-                // 并行获取排名数据和用户信息（用于获取 created_at，失败不阻断）
-                // 根据设置决定是否请求 Leaderboard（关闭时不发送请求）
-                const statsPromise = this.state.showDailyRank
-                    ? Utils.fetchForumStats().catch(() => null)
-                    : Promise.resolve(null);
-                // 如果还没有 userInfoData，并行获取以获得 created_at
-                const userInfoPromise = (!userInfoData && username)
-                    ? Utils.fetchUserInfo(username).catch(() => null)
-                    : Promise.resolve(userInfoData);
-
-                // ✅ 3) 状态机：
-                //  - lv0-1：summary 成功 => 正常；失败 => 友好错误 UI（显示具体等级）
-                //  - lv2+：connect 成功 => 正常；connect失败但summary成功 => fallback（提示+左connect右刷新）；都失败 => 友好错误 UI（左connect右刷新）
-                let basic = null;
-
-                if (userTrustLevel !== null && userTrustLevel <= 1) {
-                    try {
-                        basic = await this.fetchLowLevelTrustData(username, userTrustLevel);
-                        basic.ui = 'normal';
-                    } catch (_) {
-                        // 如果有缓存数据，继续显示缓存；否则显示友好错误 UI
-                        if (this.trustData?.basic) {
-                            this.renderTrust(this.trustData);
-                            this.stopRefreshWithMinDuration('trust');
-                            if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
-                            endWait();
-                            return;
-                        }
-                        this.renderStateCard(wrap, 'trust', {
-                            title: this.t('network_error_title'),
-                            tip: this.t('network_error_tip'),
-                            levelText,
-                            leftUrl: null,
-                            onRetry: () => this.refreshTrust({ manual: true, force: true })
-                        });
-                        this.stopRefreshWithMinDuration('trust');
-                        if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
-                        endWait();
-                        return;
-                    }
+                // 与增强版一致：未获取到 Connect 数据时不请求 session（避免 429），仅提示打开 Connect 后重试
+                if (this.trustData) {
+                    this.renderTrust(this.trustData);
+                    if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                 } else {
-                    // lv2+ 先 connect
-                    try {
-                        basic = await this.fetchHighLevelTrustData(userTrustLevel);
-                        basic.ui = 'normal';
-                    } catch (e) {
-                        basic = null;
-                    }
-
-                    // connect 失败 => summary fallback
-                    if (!basic) {
-                        try {
-                            const snap = await this.fetchSummaryTrustSnapshot(username, userTrustLevel ?? 2);
-                            basic = {
-                                ...snap,
-                                ui: 'fallback',
-                                // 对齐字段
-                                isPass: snap.isPass
-                            };
-                        } catch (_) {
-                            // connect + summary 都失败：如果有缓存数据，继续显示缓存；否则显示友好错误 UI
-                            if (this.trustData?.basic) {
-                                this.renderTrust(this.trustData);
-                                this.stopRefreshWithMinDuration('trust');
-                                if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
-                                endWait();
-                                return;
-                            }
-                            this.renderStateCard(wrap, 'trust', {
-                                title: this.t('network_error_title'),
-                                tip: this.t('network_error_tip'),
-                                levelText,
-                                leftUrl: CONFIG.API.LINK_TRUST,
-                                leftText: this.t('connect_open'),
-                                onRetry: () => this.refreshTrust({ manual: true, force: true })
-                            });
-                            this.stopRefreshWithMinDuration('trust');
-                            if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
-                            endWait();
-                            return;
-                        }
-                    }
+                    this.renderStateCard(wrap, 'trust', {
+                        title: this.t('trust_fallback_title'),
+                        tip: this.t('trust_fallback_tip'),
+                        levelText: '?',
+                        leftUrl: CONFIG.API.LINK_TRUST,
+                        leftText: this.t('connect_open'),
+                        onRetry: () => this.refreshTrust({ manual: true, force: true })
+                    });
+                    if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                 }
-
-                // ✅ 4) 合并 stats（并行等待 forumStats 和 userInfo）
-                const [forumStats, userInfo] = await Promise.all([statsPromise, userInfoPromise]);
-                // 计算注册天数
-                let memberDays = null;
-                const userCreatedAt = userInfo?.created_at;
-                if (userCreatedAt) {
-                    const createdDate = new Date(userCreatedAt);
-                    const now = new Date();
-                    memberDays = Math.floor((now - createdDate) / (1000 * 60 * 60 * 24));
-                }
-                // 只有开启"显示每日排名"时才显示排名和积分（它们都来自 Leaderboard）
-                // 如果 forumStats 获取失败（如频率限制），保留缓存中的旧数据
-                const oldStats = this.trustData?.stats;
-                const statsData = {
-                    dailyRank: this.state.showDailyRank 
-                        ? (forumStats?.dailyRank ?? oldStats?.dailyRank ?? null) 
-                        : null,
-                    score: this.state.showDailyRank 
-                        ? (forumStats?.score ?? oldStats?.score ?? null) 
-                        : null,
-                    memberDays: memberDays
-                };
-
-                // ✅ 5) 渲染并缓存
-                this.trustData = { basic, stats: statsData };
-                this.renderTrust(this.trustData);
-                Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, this.trustData);
-                this.markFetch('trust');
-                if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
+                this.stopRefreshWithMinDuration('trust');
+                endWait();
+                return;
 
             } catch (e) {
                 // 最外层兜底：如果有缓存数据，继续显示缓存；否则显示友好网络/环境错误
