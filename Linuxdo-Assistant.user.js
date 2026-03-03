@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      6.5.0
+// @version      6.5.1
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,14 +23,13 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v6.5.0
- * - 信任级别：适配 connect.linux.do 改版后的新排版（div.card + .tl3-ring/.tl3-bar-item/.tl3-quota-card/.tl3-veto-item）
- * - 信任级别：与「linux.do 小助手（增强版）」一致的获取方式，仅用 GM_xmlhttpRequest 直连 connect，不请求 session，避免 429
- * - 信任级别：直连未返回数据时仅提示打开 Connect 后重试，不再走 session/summary 降级路径
- * - 文案：未达标改为「未达升级标准」，避免误解为当前等级未达标
- * - 请求频率限制恢复为每分钟 3 次/组（429 实为误用 session 导致，非限频放宽可解决）
+ * 更新日志 v6.5.1
+ * - 默认关闭「显示每日排名」，降低 Leaderboard 接口请求频率
+ * - 开启「显示每日排名」前弹出提示，提醒可能导致频繁请求
+ * - 默认自动刷新频率由 30 分钟调整为 2 小时
  *
  * 历史更新：
+ * v6.5.0 - 信任级别：适配 connect.linux.do 改版后的新排版；与增强版一致仅用 GM_xmlhttpRequest 直连 connect，不请求 session，避免 429；直连未返回数据时仅提示打开 Connect 后重试；文案与请求频率优化
  * v6.4.0 - 优化：自定义图标分辨率提升至512x512，与小秘书图标一致，高DPI屏幕更清晰
  * v6.3.0 - 新增：支持用户自定义上传图标（可分别设置默认图和悬停图）
  * v6.2.0 - 修复：GM_xmlhttpRequest 请求主站时添加 CSRF Token
@@ -156,7 +155,7 @@
         hover: 'https://raw.githubusercontent.com/dongshuyan/Linuxdo-Assistant/main/pics/l2-m.png',
         version: '2' // 用于缓存版本控制，更新图片时递增此值
     };
-    const AUTO_REFRESH_MS = 30 * 60 * 1000; // 半小时定时刷新
+    const AUTO_REFRESH_MS = 2 * 60 * 60 * 1000; // 2 小时定时刷新
 
     // 多语言
     const I18N = {
@@ -3186,7 +3185,7 @@
                 expand: Utils.get(CONFIG.KEYS.EXPAND, false),  // Default: False
                 trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {}),
                 tabOrder: Utils.get(CONFIG.KEYS.TAB_ORDER, ['trust', 'credit', 'cdk']), // 标签顺序
-                refreshInterval: Utils.get(CONFIG.KEYS.REFRESH_INTERVAL, 30), // 分钟，0 为关闭
+                refreshInterval: Utils.get(CONFIG.KEYS.REFRESH_INTERVAL, 120), // 分钟，0 为关闭；默认 2 小时
                 opacity: Utils.get(CONFIG.KEYS.OPACITY, 1),
                 gainAnim: Utils.get(CONFIG.KEYS.GAIN_ANIM, true), // 涨分动画，默认开启
                 useClassicIcon: Utils.get(CONFIG.KEYS.USE_CLASSIC_ICON, false), // 使用经典地球图标，默认关闭
@@ -3196,7 +3195,7 @@
                 sieveEnabled: Utils.get(CONFIG.KEYS.SIEVE_ENABLED, true), // 主页筛选工具开关，默认开启
                 fontSize: Utils.get(CONFIG.KEYS.FONT_SIZE, 100), // 字体大小百分比，默认100%
                 settingSubTab: Utils.get(CONFIG.KEYS.SETTING_SUB_TAB, 'func'), // 设置页子标签：func / appearance
-                showDailyRank: Utils.get(CONFIG.KEYS.SHOW_DAILY_RANK, true) // 显示每日排名，默认开启
+                showDailyRank: Utils.get(CONFIG.KEYS.SHOW_DAILY_RANK, false) // 显示每日排名，默认关闭
             };
             this.iconCache = Utils.get(CONFIG.KEYS.ICON_CACHE, null); // 小秘书图标缓存
             // 用户自定义图标 {normal: base64, hover?: base64}，兼容旧版单字符串格式
@@ -4077,8 +4076,17 @@
                 }
                 // 显示每日排名开关
                 if (e.target.id === 'inp-show-daily-rank') {
-                    this.state.showDailyRank = e.target.checked;
-                    Utils.set(CONFIG.KEYS.SHOW_DAILY_RANK, e.target.checked);
+                    const newVal = e.target.checked;
+                    // 从关闭切换为开启时给出风险提示
+                    if (newVal && !this.state.showDailyRank) {
+                        const ok = window.confirm('显示每日排名可能会导致频繁的请求，请谨慎选择');
+                        if (!ok) {
+                            e.target.checked = false;
+                            return;
+                        }
+                    }
+                    this.state.showDailyRank = newVal;
+                    Utils.set(CONFIG.KEYS.SHOW_DAILY_RANK, newVal);
                 }
                 // 自定义图标：上传默认图按钮
                 if (e.target.id === 'btn-upload-custom-icon' || e.target.id === 'btn-change-custom-icon') {
