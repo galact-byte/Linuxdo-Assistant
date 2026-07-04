@@ -1119,6 +1119,7 @@
 
     // --- CDK Bridge (Tampermonkey 兼容兜底) ---
     const CDK_BRIDGE_ORIGIN = 'https://cdk.linux.do';
+    const LINUX_ORIGIN = 'https://linux.do';
     const CDK_CACHE_TTL = 5 * 60 * 1000;
     const isCDKPage = location.hostname === 'cdk.linux.do';
 
@@ -1149,7 +1150,8 @@
                 if (!json?.data) return;
                 Utils.set(CONFIG.KEYS.CACHE_CDK, { data: json.data, ts: Date.now() });
                 try {
-                    window.parent?.postMessage({ type: 'lda-cdk-data', payload: { data: json.data } }, '*');
+                    // 目标 origin 钉死为 linux.do，避免私有 CDK 数据被任意父窗口读取
+                    window.parent?.postMessage({ type: 'lda-cdk-data', payload: { data: json.data } }, LINUX_ORIGIN);
                 } catch (_) { }
             } catch (_) { }
         };
@@ -1157,8 +1159,9 @@
         // 初始化立即拉取一次
         cacheAndNotify();
 
-        // 接收来自 linux.do 的请求再拉取一次
+        // 接收来自 linux.do 的请求再拉取一次（校验来源，忽略其它站点伪造的消息）
         window.addEventListener('message', (e) => {
+            if (e.origin !== LINUX_ORIGIN) return;
             if (e.data?.type === 'lda-cdk-request') cacheAndNotify();
         });
     };
